@@ -441,3 +441,47 @@ def check_document(document: dict,
         },
         "issues": issues,
     }
+
+
+def same_window(window_a: dict, window_b: dict, tol: float = 1e-6) -> bool:
+    """Two scans are comparable only if their time windows are identical."""
+    try:
+        return (abs(float(window_a["start"]) - float(window_b["start"])) <= tol
+                and abs(float(window_a["end"]) - float(window_b["end"])) <= tol)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def compare_scans(base_scan: dict, target_scan: dict) -> dict:
+    """Diff two snapshots of the *same* time window by stable issueId.
+
+    Issues present only in ``target_scan`` are new, those only in
+    ``base_scan`` were resolved, and issueIds present in both still exist.
+    Comparing scans with different windows is an explicit error.
+    """
+    if not same_window(base_scan.get("window") or {},
+                       target_scan.get("window") or {}):
+        raise ValueError("两次扫描的时间窗口不同，无法比较；请选择时间窗口"
+                         "（开始 / 结束）完全相同的两次扫描")
+    base_issues = {q["issueId"]: q for q in base_scan.get("issues", [])}
+    target_issues = {q["issueId"]: q for q in target_scan.get("issues", [])}
+    new = [target_issues[i] for i in target_issues if i not in base_issues]
+    resolved = [base_issues[i] for i in base_issues if i not in target_issues]
+    persistent = [target_issues[i] for i in target_issues if i in base_issues]
+    return {
+        "window": target_scan.get("window"),
+        "base": {"id": base_scan.get("id"),
+                 "createdAt": base_scan.get("createdAt"),
+                 "summary": base_scan.get("summary")},
+        "target": {"id": target_scan.get("id"),
+                   "createdAt": target_scan.get("createdAt"),
+                   "summary": target_scan.get("summary")},
+        "counts": {
+            "new": len(new),
+            "resolved": len(resolved),
+            "persistent": len(persistent),
+        },
+        "newIssues": new,
+        "resolvedIssues": resolved,
+        "persistentIssues": persistent,
+    }

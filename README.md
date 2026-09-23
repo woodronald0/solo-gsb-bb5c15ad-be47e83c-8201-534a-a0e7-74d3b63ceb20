@@ -205,6 +205,26 @@ JSON 消费方）。重新导入导出的 JSON 时，这些校注按普通校注
 7. 「⬇️ 导出质检 JSON」下载含项目元数据、扫描窗口、统计与全部问题
    （证据片段、`issueId`、`fix`）的报告文件。
 
+**扫描历史与两次扫描对比**：每次点击「开始质检」（含一键裁剪后的自动复检）
+都会把**时间窗口、扫描时间、统计与问题快照**写入 SQLite，工作台底部的
+「🕘 扫描历史」表按时间倒序列出该项目的全部扫描（窗口、各级别数量、
+可裁剪数），点「查看快照」可只读回看任意一次扫描当时的问题明细。
+
+勾选**两次时间窗口完全相同（开始 / 结束一致）**的扫描后点「⚖️ 对比所选」，
+按稳定 `issueId` 标出并统计：
+
+| 分类 | 判定 |
+| --- | --- |
+| 🆕 新增 | 只在较新的一次扫描中出现的 `issueId` |
+| ✅ 已解决 | 只在较早的一次扫描中出现、较新扫描中已消失的 `issueId` |
+| ➡️ 仍存在 | 两次扫描都出现的 `issueId`（附较新扫描的问题明细） |
+
+**时间窗口不同的两次扫描明确禁止比较**：历史表中与当前勾选窗口不同的
+行会标灰并提示「窗口不同」，选了两行不同窗口时对比按钮禁用并给出红色
+提示；绕过前端直接调 API 同样返回 400。对比时按扫描时间自动区分
+基准（旧）/ 对比（新），与两个参数的传入顺序无关。删除项目时其全部
+扫描历史随外键级联一并清除。
+
 ---
 
 ## 合并规则说明
@@ -253,7 +273,10 @@ JSON 消费方）。重新导入导出的 JSON 时，这些校注按普通校注
 | POST | `/api/projects` | 新建项目 |
 | GET/PUT/DELETE | `/api/projects/{id}` | 读取 / 保存文档 / 删除 |
 | GET | `/api/projects/{id}/export` | 下载校注 JSON |
-| POST | `/api/projects/{id}/quality-check` | 校注质检（越界 / 重叠 / 说话人不一致），见下 |
+| POST | `/api/projects/{id}/quality-check` | 校注质检（越界 / 重叠 / 说话人不一致），结果自动存入扫描历史，见下 |
+| GET | `/api/projects/{id}/quality-scans` | 项目的扫描历史（时间倒序，含窗口 / 统计，不含问题明细） |
+| GET | `/api/projects/{id}/quality-scans/{scanId}` | 读取某次扫描的完整问题快照 |
+| POST | `/api/projects/{id}/quality-scans/compare` | 对比两次同窗口扫描，按 issueId 输出新增 / 已解决 / 仍存在 |
 | POST | `/api/import` | 上传文件（multipart）或 JSON 文本解析转写稿 |
 | POST | `/api/projects/{id}/import` | 导入到指定项目（保留校注） |
 | POST | `/api/merge` | 三方合并，可携带 `resolutions` 裁决 |
@@ -337,7 +360,53 @@ JSON 消费方）。重新导入导出的 JSON 时，这些校注按普通校注
 `evidence` 含 `annotationSpeaker`、`segmentSpeakers` 与逐个转写片段
 （含 `coveredSeconds`）。问题按严重级别（error → warning → info）再按
 开始时间排序。前端的「一键裁剪」即把 `fix` 写回对应校注后调用
-`PUT /api/projects/{id}` 保存（不产生额外服务端状态）。
+`PUT /api/projects/{id}` 保存（不产生额外服务端状态）。每次质检都会在
+`quality_scans` 表落一条记录，响应中额外带 `scanId` 与 `scannedAt`。
+
+### 扫描历史与对比
+
+`GET /api/projects/{id}/quality-scans` 按时间倒序返回扫描摘要
+（列表项不含 `issues` 明细）：
+
+```json
+{
+  "id": "scan-ab12cd34ef56",
+  "projectId": "proj-…",
+  "window": { "start": 0.0, "end": 412.5 },
+  "explicitWindow": false,
+  "summary": { "total": 3, "error": 2, "…": "…" },
+  "createdAt": "2026-09-23T10:22:36.669112+00:00"
+}
+```
+
+`GET /api/projects/{id}/quality-scans/{scanId}` 在此基础上额外返回完整
+`issues` 数组（与质检响应中的问题结构一致，含证据 / `fix`）。
+
+`POST /api/projects/{id}/quality-scans/compare`：
+
+```json
+{ "scanIdA": "scan-…", "scanIdB": "scan-…" }
+```
+
+服务端按 `createdAt` 自动把较早的扫描作为基准；两次扫描必须属于该项目
+且**时间窗口完全相同**（`window.start/end` 一致，容差 1e-6），否则：
+
+- 两次窗口不同 → **400**（`两次扫描的时间窗口不同，无法比较…`）；
+- 两个 id 相同 → 400；任一扫描不存在 / 不属于该项目 → 404。
+
+同窗口时返回（问题数组按基准 / 对比各自的原有排序）：
+
+```json
+{
+  "window": { "start": 0.0, "end": 412.5 },
+  "base":   { "id": "scan-…", "createdAt": "…", "summary": { "…": "…" } },
+  "target": { "id": "scan-…", "createdAt": "…", "summary": { "…": "…" } },
+  "counts": { "new": 1, "resolved": 2, "persistent": 3 },
+  "newIssues":      [ { "issueId": "qc:overlap:ann-3|ann-9", "…": "…" } ],
+  "resolvedIssues": [ { "issueId": "qc:out_of_bounds:ann-1", "…": "…" } ],
+  "persistentIssues": [ { "issueId": "qc:speaker_mismatch:ann-2", "…": "…" } ]
+}
+```
 
 交互式文档（Swagger）：http://localhost:8000/docs
 
@@ -370,7 +439,7 @@ npm run dev
 ```bash
 cd backend
 python -m pytest test_merge.py test_rules_api.py test_quality.py \
-  test_quality_api.py -q
+  test_quality_api.py test_quality_scans_api.py -q
 ```
 
 测试覆盖：互不重叠改动自动合并、同字段/不同字段冲突、字段级裁决、
@@ -381,7 +450,11 @@ python -m pytest test_merge.py test_rules_api.py test_quality.py \
 TestClient）；**质检引擎**另有 16 个扫描线算法单测（越界首尾 / 内部空隙 /
 完全在外、部分重叠与包含重叠、说话人全错与横跨切换、说话人缺失、时间窗口
 过滤、稳定 issueId、非法条目跳过、严重级别排序）与端到端 API 用例
-（默认扫描、窗口过滤、400/422、一键裁剪后复检消失、404）。
+（默认扫描、窗口过滤、400/422、一键裁剪后复检消失、404）；
+**扫描历史与对比**端到端用例（`test_quality_scans_api.py`）覆盖每次扫描
+自动落库与返回 scanId、历史列表（按项目隔离 / 摘要不含明细）、快照详情、
+同窗口按 issueId 输出新增 / 已解决 / 仍存在（参数顺序无关）、不同窗口
+400、相同 id 400、不存在 404、删除项目级联清除历史。
 
 ---
 
@@ -398,12 +471,13 @@ TestClient）；**质检引擎**另有 16 个扫描线算法单测（越界首�
 │   │   ├── rules.py         # 规则匹配、区间合并、应用规划（plan_apply）
 │   │   ├── quality.py       # 质检扫描线：越界 / 重叠 / 说话人不一致
 │   │   ├── importer.py      # 转写稿解析（纯文本 / JSON）
-│   │   ├── db.py            # SQLite 持久化（项目 / 规则 / 应用记录）
+│   │   ├── db.py            # SQLite 持久化（项目 / 规则 / 应用记录 / 质检扫描历史）
 │   │   └── schemas.py       # Pydantic 模型
 │   ├── test_merge.py        # 合并算法测试
 │   ├── test_rules_api.py    # 规则模块端到端 API 测试
 │   ├── test_quality.py      # 质检引擎扫描线单测
 │   ├── test_quality_api.py  # 质检端到端 API 测试
+│   ├── test_quality_scans_api.py  # 质检扫描历史与两次扫描对比 API 测试
 │   └── requirements.txt
 ├── frontend/
 │   ├── src/

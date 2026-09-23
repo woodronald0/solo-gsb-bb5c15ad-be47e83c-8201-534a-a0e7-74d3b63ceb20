@@ -74,4 +74,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(window || {}),
     }),
+  listQualityScans: (projectId) =>
+    request(`/projects/${projectId}/quality-scans`),
+  getQualityScan: (projectId, scanId) =>
+    request(`/projects/${projectId}/quality-scans/${scanId}`),
+  compareQualityScans: (projectId, scanIdA, scanIdB) =>
+    request(`/projects/${projectId}/quality-scans/compare`, {
+      method: 'POST',
+      body: JSON.stringify({ scanIdA, scanIdB }),
+    }),
 };

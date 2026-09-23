@@ -17,6 +17,7 @@ from .schemas import (
     ProjectIn,
     ProjectUpdate,
     QualityCheckRequest,
+    QualityScanCompareRequest,
     RuleIn,
     RulePreviewRequest,
 )
@@ -290,7 +291,11 @@ def undo_rule_run(run_id: str) -> dict:
 
 @app.post("/api/projects/{project_id}/quality-check")
 def quality_check(project_id: str, payload: QualityCheckRequest | None = None) -> dict:
-    """Scan the saved project document for annotation quality issues."""
+    """Scan the saved project document for annotation quality issues.
+
+    Every scan (time window, statistics and the full issue snapshot) is
+    stored in SQLite and returned as ``scan`` for later comparison.
+    """
     project = _get_or_404(project_id)
     start = payload.start if payload is not None else None
     end = payload.end if payload is not None else None
@@ -303,7 +308,52 @@ def quality_check(project_id: str, payload: QualityCheckRequest | None = None) -
         raise HTTPException(status_code=400, detail=str(exc))
     result["projectId"] = project_id
     result["projectName"] = project["name"]
+    scan = db.create_quality_scan(project_id, result)
+    result["scanId"] = scan["id"]
+    result["scannedAt"] = scan["createdAt"]
     return result
+
+
+@app.get("/api/projects/{project_id}/quality-scans")
+def list_quality_scans(project_id: str) -> list[dict]:
+    """List the project's quality scans (newest first, summaries only)."""
+    _get_or_404(project_id)
+    return db.list_quality_scans(project_id)
+
+
+@app.get("/api/projects/{project_id}/quality-scans/{scan_id}")
+def get_quality_scan(project_id: str, scan_id: str) -> dict:
+    """Fetch one stored scan with its full issue snapshot."""
+    _get_or_404(project_id)
+    scan = db.get_quality_scan(project_id, scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    return scan
+
+
+@app.post("/api/projects/{project_id}/quality-scans/compare")
+def compare_quality_scans(project_id: str,
+                          payload: QualityScanCompareRequest) -> dict:
+    """Compare two scans by stable issueId (new / resolved / persistent).
+
+    Scans with different time windows cannot be compared: the request is
+    rejected with 400 before any diffing happens.
+    """
+    _get_or_404(project_id)
+    if payload.scanIdA == payload.scanIdB:
+        raise HTTPException(status_code=400,
+                            detail="请选择两次不同的扫描进行比较")
+    scan_a = db.get_quality_scan(project_id, payload.scanIdA)
+    scan_b = db.get_quality_scan(project_id, payload.scanIdB)
+    if scan_a is None or scan_b is None:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    # base = older scan, target = newer scan, regardless of request order
+    base_scan, target_scan = sorted(
+        [scan_a, scan_b], key=lambda s: (s["createdAt"], s["id"]))
+    try:
+        return quality.compare_scans(base_scan, target_scan)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # ---------- three-way merge ----------

@@ -65,3 +65,9 @@ class QualityCheckRequest(BaseModel):
     """Optional time window; omitted fields default to the document span."""
     start: float | None = Field(default=None, ge=0)
     end: float | None = Field(default=None, ge=0)
+
+
+class QualityScanCompareRequest(BaseModel):
+    """Two scans of the same project; they must share an identical window."""
+    scanIdA: str
+    scanIdB: str

@@ -481,3 +481,49 @@ code {
   display: flex; flex-direction: column; gap: 4px; margin-top: 2px;
 }
 .qc-ann-evidence { flex-direction: row; flex-wrap: wrap; gap: 6px; }
+
+/* scan history */
+.qc-history { margin-top: 18px; }
+.qc-history-head {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.qc-history-head h3 { margin: 0; white-space: nowrap; }
+.qc-history-head .muted { flex: 1; min-width: 240px; }
+.qc-history-actions { display: flex; gap: 8px; margin-left: auto; }
+.qc-history-empty { padding: 10px 2px 4px; }
+.qc-scan-table { margin-top: 8px; }
+.qc-scan-table tr.selected { background: #eef3ff; }
+.qc-scan-table tr.qc-scan-incompatible td { color: var(--muted); }
+.qc-scan-table tr.qc-scan-incompatible { background: repeating-linear-gradient(
+  45deg, transparent, transparent 8px, rgba(185, 124, 31, 0.05)
+  8px, rgba(185, 124, 31, 0.05) 16px); }
+.qc-window-cell { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qc-win-tag { margin-left: 6px; }
+.qc-num-error { color: var(--danger); font-weight: 600; }
+.qc-num-warn { color: var(--warn); font-weight: 600; }
+.qc-compare-warn {
+  margin-top: 8px; padding: 6px 12px; border-radius: 6px;
+  background: #fdf7ea; border: 1px solid #ecdcb2; color: #7a5517;
+  font-size: 13px;
+}
+.qc-view-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  border-left: 4px solid var(--primary); font-size: 13px;
+}
+.qc-view-banner .btn { margin-left: auto; }
+
+/* scan comparison */
+.qc-compare-head {
+  display: flex; gap: 16px; align-items: flex-start;
+  justify-content: space-between; margin-bottom: 12px;
+}
+.qc-compare-counts { margin-bottom: 14px; }
+.qc-compare-counts .stat-box { min-width: 130px; }
+.qc-compare-counts .stat-box span { font-size: 22px; font-weight: 700; }
+.qc-count-new span { color: var(--danger); }
+.qc-count-resolved span { color: var(--ok); }
+.qc-count-persistent span { color: var(--warn); }
+.qc-compare-group { margin-bottom: 12px; }
+.qc-group-new { border-left: 4px solid var(--danger); }
+.qc-group-resolved { border-left: 4px solid var(--ok); }
+.qc-group-persistent { border-left: 4px solid var(--warn); }

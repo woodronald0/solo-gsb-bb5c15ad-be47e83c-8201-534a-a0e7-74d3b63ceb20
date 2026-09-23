@@ -14,6 +14,23 @@ const TYPE_META = {
   speaker_missing: { label: '说话人缺失', icon: '❔' },
 }
 
+const WINDOW_TOL = 1e-6
+
+function sameWindow(a, b) {
+  if (!a || !b) return false
+  return Math.abs(a.window.start - b.window.start) < WINDOW_TOL
+    && Math.abs(a.window.end - b.window.end) < WINDOW_TOL
+}
+
+function fmtDateTime(iso) {
+  if (!iso) return '—'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 export default function QualityPage() {
   const { id: projectId } = useParams()
   const [project, setProject] = useState(null)
@@ -25,9 +42,22 @@ export default function QualityPage() {
   const [sevFilter, setSevFilter] = useState(() => new Set())
   const [typeFilter, setTypeFilter] = useState(() => new Set())
   const [activeIssue, setActiveIssue] = useState(null) // issue object
+  // scan history
+  const [scans, setScans] = useState([])
+  const [selected, setSelected] = useState([]) // scan ids, up to 2
+  const [comparing, setComparing] = useState(false)
+  const [comparison, setComparison] = useState(null)
+  const [viewScan, setViewScan] = useState(null) // stored snapshot shown read-only
   const timelineRef = useRef(null)
 
   const doc = project?.document || { segments: [], annotations: [] }
+  // a historical snapshot, when open, takes over the result area
+  const shown = viewScan || result
+  const selectedScans = useMemo(
+    () => scans.filter((s) => selected.includes(s.id)),
+    [scans, selected])
+  const windowMismatch = selectedScans.length === 2
+    && !sameWindow(selectedScans[0], selectedScans[1])
 
   const duration = useMemo(() => {
     const ends = [...doc.segments, ...doc.annotations].map((x) => x.end || 0)
@@ -38,6 +68,9 @@ export default function QualityPage() {
     setOk(msg)
     setTimeout(() => setOk(''), 3500)
   }
+
+  const loadScans = () =>
+    api.listQualityScans(projectId).then(setScans).catch(() => {})
 
   const runCheck = async (keepWindow) => {
     setChecking(true); setError('')
@@ -51,6 +84,9 @@ export default function QualityPage() {
     try {
       const data = await api.qualityCheck(projectId, Object.keys(body).length ? body : null)
       setResult(data)
+      setViewScan(null)
+      setComparison(null)
+      loadScans()
       return data
     } catch (e) {
       setError(e.message)
@@ -64,6 +100,7 @@ export default function QualityPage() {
     api.getProject(projectId).then((p) => {
       setProject(p)
     }).catch((e) => setError(e.message))
+    loadScans()
   }, [projectId])
 
   const resetWindow = () => setWinInput({ start: '', end: '' })
@@ -74,6 +111,48 @@ export default function QualityPage() {
     setter(next)
   }
 
+  const toggleScan = (scan) => {
+    setError('')
+    setSelected((sel) => {
+      if (sel.includes(scan.id)) return sel.filter((x) => x !== scan.id)
+      if (sel.length >= 2) return [sel[1], scan.id]
+      return [...sel, scan.id]
+    })
+  }
+
+  const runCompare = async () => {
+    if (selectedScans.length !== 2) return
+    if (!sameWindow(selectedScans[0], selectedScans[1])) {
+      setError('两次扫描的时间窗口不同，无法比较：请选择时间窗口'
+        + '（开始 / 结束）完全相同的两次扫描。')
+      return
+    }
+    setComparing(true); setError('')
+    try {
+      const data = await api.compareQualityScans(
+        projectId, selectedScans[0].id, selectedScans[1].id)
+      setComparison(data)
+      setViewScan(null)
+      setActiveIssue(null)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setComparing(false)
+    }
+  }
+
+  const openScan = async (scan) => {
+    setError('')
+    try {
+      const detail = await api.getQualityScan(projectId, scan.id)
+      setViewScan(detail)
+      setComparison(null)
+      setActiveIssue(null)
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   const locate = (issue) => {
     setActiveIssue(issue)
     setTimeout(() => timelineRef.current?.scrollIntoView(
@@ -81,11 +160,11 @@ export default function QualityPage() {
   }
 
   const filtered = useMemo(() => {
-    if (!result) return []
-    return result.issues.filter((q) =>
+    if (!shown) return []
+    return shown.issues.filter((q) =>
       (sevFilter.size === 0 || sevFilter.has(q.severity)) &&
       (typeFilter.size === 0 || typeFilter.has(q.type)))
-  }, [result, sevFilter, typeFilter])
+  }, [shown, sevFilter, typeFilter])
 
   const focusRange = activeIssue
     ? { start: activeIssue.start, end: activeIssue.end }
@@ -133,13 +212,15 @@ export default function QualityPage() {
   }
 
   const exportResult = () => {
-    if (!result) return
+    if (!shown) return
     downloadJson(`${project?.name || 'project'}-quality-check.json`, {
       kind: 'annotation-quality-check',
       projectId,
       projectName: project?.name || '',
       exportedAt: new Date().toISOString(),
-      result,
+      scanId: viewScan?.id || result?.scanId || null,
+      scannedAt: viewScan?.createdAt || result?.scannedAt || null,
+      result: shown,
     })
   }
 
@@ -160,7 +241,7 @@ export default function QualityPage() {
           </Link>
           <button
             className="btn"
-            disabled={!result}
+            disabled={!shown}
             onClick={exportResult}
           >
             ⬇️ 导出质检 JSON
@@ -205,77 +286,108 @@ export default function QualityPage() {
         </div>
       </div>
 
-      {result && (
-        <SummaryBar result={result} />
-      )}
-
-      {result && (
-        <div className="panel qc-timeline-panel" ref={timelineRef}>
-          <Timeline
-            duration={duration}
-            segments={doc.segments}
-            annotations={doc.annotations}
-            highlightIds={activeIssue ? highlightIds : null}
-            focusRange={focusRange}
-            readOnly
-            onSelect={() => {}}
-            onBackgroundClick={() => setActiveIssue(null)}
-            onClickItem={(annId) => {
-              const issue = result.issues.find(
-                (q) => q.annotationId === annId
-                  || q.annotationIds.includes(annId))
-              if (issue) locate(issue)
-            }}
-          />
-          {activeIssue && (
-            <div className={`qc-focus-hint ${SEV_CLASS[activeIssue.severity]}`}>
-              <strong>
-                {TYPE_META[activeIssue.type].icon}{' '}
-                {TYPE_META[activeIssue.type].label} ·{' '}
-                {SEV_LABEL[activeIssue.severity]}
-              </strong>
+      {comparison ? (
+        <CompareView comparison={comparison} onClose={() => setComparison(null)} />
+      ) : (
+        <>
+          {viewScan && (
+            <div className="panel qc-view-banner">
               <span>
-                定位 {fmtTime(activeIssue.start)} – {fmtTime(activeIssue.end)}
+                📜 正在查看历史扫描快照（{fmtDateTime(viewScan.createdAt)}）：
+                窗口 {fmtTime(viewScan.window.start)} –{' '}
+                {fmtTime(viewScan.window.end)}，快照只读，修复操作已禁用。
               </span>
-              <button className="btn small" onClick={() => setActiveIssue(null)}>
-                取消定位
+              <button className="btn small" onClick={() => setViewScan(null)}>
+                {result ? '← 返回最新扫描结果' : '关闭快照'}
               </button>
             </div>
           )}
-        </div>
+
+          {shown && (
+            <SummaryBar result={shown} />
+          )}
+
+          {shown && (
+            <div className="panel qc-timeline-panel" ref={timelineRef}>
+              <Timeline
+                duration={duration}
+                segments={doc.segments}
+                annotations={doc.annotations}
+                highlightIds={activeIssue ? highlightIds : null}
+                focusRange={focusRange}
+                readOnly
+                onSelect={() => {}}
+                onBackgroundClick={() => setActiveIssue(null)}
+                onClickItem={(annId) => {
+                  const issue = shown.issues.find(
+                    (q) => q.annotationId === annId
+                      || q.annotationIds.includes(annId))
+                  if (issue) locate(issue)
+                }}
+              />
+              {activeIssue && (
+                <div className={`qc-focus-hint ${SEV_CLASS[activeIssue.severity]}`}>
+                  <strong>
+                    {TYPE_META[activeIssue.type].icon}{' '}
+                    {TYPE_META[activeIssue.type].label} ·{' '}
+                    {SEV_LABEL[activeIssue.severity]}
+                  </strong>
+                  <span>
+                    定位 {fmtTime(activeIssue.start)} – {fmtTime(activeIssue.end)}
+                  </span>
+                  <button className="btn small" onClick={() => setActiveIssue(null)}>
+                    取消定位
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {shown && (
+            <FilterBar
+              result={shown}
+              sevFilter={sevFilter}
+              typeFilter={typeFilter}
+              onToggleSev={(v) => toggle(sevFilter, setSevFilter, v)}
+              onToggleType={(v) => toggle(typeFilter, setTypeFilter, v)}
+              shownCount={filtered.length}
+            />
+          )}
+
+          {shown && filtered.length === 0 && (
+            <div className="panel empty-hint">
+              {shown.issues.length === 0
+                ? '🎉 未发现问题：所有校注都在转写范围内、互不重叠且说话人一致。'
+                : '当前筛选条件下没有问题。'}
+            </div>
+          )}
+
+          <div className="qc-issue-list">
+            {filtered.map((q) => (
+              <IssueCard
+                key={q.issueId}
+                issue={q}
+                active={activeIssue?.issueId === q.issueId}
+                onLocate={() => locate(q)}
+                onFix={() => applyFix(q)}
+                projectId={projectId}
+                readOnly={!!viewScan}
+              />
+            ))}
+          </div>
+        </>
       )}
 
-      {result && (
-        <FilterBar
-          result={result}
-          sevFilter={sevFilter}
-          typeFilter={typeFilter}
-          onToggleSev={(v) => toggle(sevFilter, setSevFilter, v)}
-          onToggleType={(v) => toggle(typeFilter, setTypeFilter, v)}
-          shownCount={filtered.length}
-        />
-      )}
-
-      {result && filtered.length === 0 && (
-        <div className="panel empty-hint">
-          {result.issues.length === 0
-            ? '🎉 未发现问题：所有校注都在转写范围内、互不重叠且说话人一致。'
-            : '当前筛选条件下没有问题。'}
-        </div>
-      )}
-
-      <div className="qc-issue-list">
-        {filtered.map((q) => (
-          <IssueCard
-            key={q.issueId}
-            issue={q}
-            active={activeIssue?.issueId === q.issueId}
-            onLocate={() => locate(q)}
-            onFix={() => applyFix(q)}
-            projectId={projectId}
-          />
-        ))}
-      </div>
+      <ScanHistoryPanel
+        scans={scans}
+        selected={selected}
+        comparing={comparing}
+        onToggle={toggleScan}
+        onClear={() => setSelected([])}
+        onCompare={runCompare}
+        onOpen={openScan}
+        windowMismatch={windowMismatch}
+      />
     </div>
   )
 }
@@ -349,7 +461,196 @@ function FilterBar({
   )
 }
 
-function IssueCard({ issue, active, onLocate, onFix, projectId }) {
+function ScanHistoryPanel({
+  scans, selected, comparing, onToggle, onClear, onCompare, onOpen,
+  windowMismatch,
+}) {
+  const selectedCount = selected.length
+  const pickedWindow = selectedCount === 1
+    ? scans.find((s) => s.id === selected[0])
+    : null
+  const canCompare = selectedCount === 2 && !windowMismatch
+  return (
+    <div className="panel qc-history">
+      <div className="qc-history-head">
+        <h3>🕘 扫描历史</h3>
+        <span className="muted small">
+          每次「开始质检」自动保存时间窗口、统计与问题快照，共 {scans.length} 次。
+          勾选两次同窗口扫描可按 issueId 对比。
+        </span>
+        <div className="qc-history-actions">
+          <button
+            className="btn small"
+            disabled={selectedCount === 0}
+            onClick={onClear}
+          >
+            清除选择
+          </button>
+          <button
+            className="btn small primary"
+            disabled={!canCompare || comparing}
+            onClick={onCompare}
+            title={selectedCount !== 2
+              ? '请勾选两次扫描'
+              : windowMismatch
+                ? '时间窗口不同，禁止比较'
+                : '比较两次扫描'}
+          >
+            {comparing ? '对比中…' : `⚖️ 对比所选（${selectedCount}/2）`}
+          </button>
+        </div>
+      </div>
+      {windowMismatch && (
+        <div className="qc-compare-warn">
+          ⚠️ 所选两次扫描的时间窗口不同，禁止比较：请选择时间窗口
+          （开始 / 结束）完全相同的两次扫描。
+        </div>
+      )}
+      {scans.length === 0 ? (
+        <div className="muted small qc-history-empty">
+          还没有扫描记录：点击「🔎 开始质检」后会自动保存。
+        </div>
+      ) : (
+        <table className="run-table qc-scan-table">
+          <thead>
+            <tr>
+              <th>对比</th>
+              <th>扫描时间</th>
+              <th>时间窗口</th>
+              <th>问题总数</th>
+              <th>严重 / 警告 / 提示</th>
+              <th>可裁剪</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {scans.map((s) => {
+              const isSel = selected.includes(s.id)
+              const incompatible = !!pickedWindow && !isSel
+                && !sameWindow(pickedWindow, s)
+              return (
+                <tr
+                  key={s.id}
+                  className={[
+                    isSel ? 'selected' : '',
+                    incompatible ? 'qc-scan-incompatible' : '',
+                  ].join(' ')}
+                >
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={isSel}
+                      disabled={!isSel && selectedCount >= 2}
+                      title={incompatible
+                        ? '与已选扫描的时间窗口不同，不能与之比较'
+                        : '选择用于对比'}
+                      onChange={() => onToggle(s)}
+                    />
+                  </td>
+                  <td>{fmtDateTime(s.createdAt)}</td>
+                  <td className="qc-window-cell">
+                    {fmtTime(s.window.start)} – {fmtTime(s.window.end)}
+                    {!s.explicitWindow && (
+                      <span className="tag qc-win-tag">整条转写</span>
+                    )}
+                    {incompatible && (
+                      <span className="tag danger qc-win-tag">窗口不同</span>
+                    )}
+                  </td>
+                  <td>{s.summary.total}</td>
+                  <td>
+                    <span className="qc-num-error">{s.summary.error}</span>
+                    {' / '}
+                    <span className="qc-num-warn">{s.summary.warning}</span>
+                    {' / '}
+                    <span className="muted">{s.summary.info}</span>
+                  </td>
+                  <td>{s.summary.fixable}</td>
+                  <td>
+                    <button className="btn small" onClick={() => onOpen(s)}>
+                      查看快照
+                    </button>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      )}
+    </div>
+  )
+}
+
+const COMPARE_GROUPS = [
+  ['newIssues', '🆕 新增问题（旧扫描没有、本次出现）', 'qc-group-new'],
+  ['resolvedIssues', '✅ 已解决（旧扫描有、本次消失）', 'qc-group-resolved'],
+  ['persistentIssues', '➡️ 仍存在（两次扫描都有）', 'qc-group-persistent'],
+]
+
+function CompareView({ comparison, onClose }) {
+  const { window, base, target, counts } = comparison
+  return (
+    <div className="qc-compare">
+      <div className="panel qc-compare-head">
+        <div>
+          <h3>
+            ⚖️ 扫描对比 · 同时间窗口{' '}
+            {fmtTime(window.start)} – {fmtTime(window.end)}
+          </h3>
+          <div className="muted small">
+            基准（旧）：{fmtDateTime(base.createdAt)}，{base.summary.total} 个问题
+            {'  →  '}
+            对比（新）：{fmtDateTime(target.createdAt)}，{target.summary.total} 个问题
+            <br />
+            按稳定 issueId 比对：同一 issueId 记为「仍存在」，仅在新扫描中出现为
+            「新增」，仅在旧扫描中出现为「已解决」。
+          </div>
+        </div>
+        <button className="btn" onClick={onClose}>退出对比</button>
+      </div>
+
+      <div className="stats-grid qc-compare-counts">
+        <div className="stat-box qc-count-new">
+          <strong>新增</strong>
+          <span>{counts.new}</span>
+        </div>
+        <div className="stat-box qc-count-resolved">
+          <strong>已解决</strong>
+          <span>{counts.resolved}</span>
+        </div>
+        <div className="stat-box qc-count-persistent">
+          <strong>仍存在</strong>
+          <span>{counts.persistent}</span>
+        </div>
+      </div>
+
+      {COMPARE_GROUPS.map(([key, title, cls]) => {
+        const issues = comparison[key]
+        return (
+          <div key={key} className={`panel qc-compare-group ${cls}`}>
+            <h4>{title} · {issues.length}</h4>
+            {issues.length === 0 ? (
+              <div className="muted small">无</div>
+            ) : (
+              <div className="qc-issue-list">
+                {issues.map((q) => (
+                  <IssueCard
+                    key={`${key}:${q.issueId}`}
+                    issue={q}
+                    readOnly
+                    projectId=""
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function IssueCard({ issue, active, onLocate, onFix, projectId, readOnly }) {
   const meta = TYPE_META[issue.type] || { label: issue.type, icon: '⚠️' }
   const editorUrl = `/projects/${projectId}?ann=${
     issue.annotationIds[0] || issue.annotationId || ''
@@ -373,19 +674,21 @@ function IssueCard({ issue, active, onLocate, onFix, projectId }) {
       </div>
       <div className="qc-issue-message">{issue.message}</div>
       <IssueEvidence issue={issue} />
-      <div className="card-actions">
-        <button className="btn small primary" onClick={onLocate}>
-          📍 在时间轴定位
-        </button>
-        {issue.fixable && issue.fix && (
-          <button className="btn small" onClick={onFix} title="裁剪到转写覆盖范围并保存">
-            ✂️ 一键裁剪到 {fmtTime(issue.fix.start)} – {fmtTime(issue.fix.end)} 并保存
+      {!readOnly && (
+        <div className="card-actions">
+          <button className="btn small primary" onClick={onLocate}>
+            📍 在时间轴定位
           </button>
-        )}
-        <Link className="btn small" to={editorUrl}>
-          在编辑页处理 →
-        </Link>
-      </div>
+          {issue.fixable && issue.fix && (
+            <button className="btn small" onClick={onFix} title="裁剪到转写覆盖范围并保存">
+              ✂️ 一键裁剪到 {fmtTime(issue.fix.start)} – {fmtTime(issue.fix.end)} 并保存
+            </button>
+          )}
+          <Link className="btn small" to={editorUrl}>
+            在编辑页处理 →
+          </Link>
+        </div>
+      )}
     </div>
   )
 }
