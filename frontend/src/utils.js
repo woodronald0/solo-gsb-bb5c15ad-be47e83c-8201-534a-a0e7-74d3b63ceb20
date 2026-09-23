@@ -40,6 +40,16 @@ export function round3(n) {
   return Math.round(n * 1000) / 1000;
 }
 
+/** Format an ISO timestamp (e.g. scan createdAt) in local time. */
+export function fmtDateTime(iso) {
+  if (!iso) return '--';
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} `
+    + `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 /** Download a JSON document in the browser. */
 export function downloadJson(filename, data) {
   const blob = new Blob([JSON.stringify(data, null, 2)], {

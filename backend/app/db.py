@@ -75,10 +75,24 @@ def init() -> None:
             FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS quality_scans (
+            id              TEXT PRIMARY KEY,
+            project_id      TEXT NOT NULL,
+            window_start    REAL NOT NULL,
+            window_end      REAL NOT NULL,
+            explicit_window INTEGER NOT NULL DEFAULT 0,
+            summary         TEXT NOT NULL DEFAULT '{}',
+            issues          TEXT NOT NULL DEFAULT '[]',
+            created_at      TEXT NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_rules_project
             ON annotation_rules(project_id);
         CREATE INDEX IF NOT EXISTS idx_runs_rule ON rule_runs(rule_id);
         CREATE INDEX IF NOT EXISTS idx_runs_project ON rule_runs(project_id);
+        CREATE INDEX IF NOT EXISTS idx_qc_scans_project
+            ON quality_scans(project_id);
         """
     )
     _conn.commit()
@@ -466,3 +480,66 @@ def undo_rule_run(run_id: str) -> dict | None:
 
 def deepcopy_json(value):
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+# ---------- quality check scans ----------
+
+def _scan_to_dict(row: sqlite3.Row, *, full: bool = False) -> dict:
+    out = {
+        "id": row["id"],
+        "projectId": row["project_id"],
+        "window": {"start": row["window_start"], "end": row["window_end"]},
+        "explicitWindow": bool(row["explicit_window"]),
+        "summary": json.loads(row["summary"]),
+        "createdAt": row["created_at"],
+    }
+    if full:
+        out["issues"] = json.loads(row["issues"])
+    return out
+
+
+def create_quality_scan(project_id: str, result: dict) -> dict:
+    """Persist one quality-check run: window, stats and issue snapshot."""
+    scan_id = new_id("scan")
+    now = _now()
+    window = result.get("window") or {}
+    with _lock:
+        _conn.execute(
+            "INSERT INTO quality_scans (id, project_id, window_start,"
+            " window_end, explicit_window, summary, issues, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (scan_id, project_id, float(window.get("start", 0.0)),
+             float(window.get("end", 0.0)),
+             1 if result.get("explicitWindow") else 0,
+             json.dumps(result.get("summary", {}), ensure_ascii=False),
+             json.dumps(result.get("issues", []), ensure_ascii=False), now),
+        )
+        _conn.commit()
+    return get_quality_scan(scan_id)
+
+
+def list_quality_scans(project_id: str) -> list[dict]:
+    """Scan summaries (no issue payload) for a project, newest first."""
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM quality_scans WHERE project_id = ?"
+            " ORDER BY created_at DESC, rowid DESC",
+            (project_id,),
+        ).fetchall()
+    return [_scan_to_dict(r) for r in rows]
+
+
+def get_quality_scan(scan_id: str) -> dict | None:
+    with _lock:
+        row = _conn.execute(
+            "SELECT * FROM quality_scans WHERE id = ?", (scan_id,)
+        ).fetchone()
+    return _scan_to_dict(row, full=True) if row else None
+
+
+def delete_quality_scan(scan_id: str) -> bool:
+    with _lock:
+        cur = _conn.execute("DELETE FROM quality_scans WHERE id = ?",
+                            (scan_id,))
+        _conn.commit()
+    return cur.rowcount > 0

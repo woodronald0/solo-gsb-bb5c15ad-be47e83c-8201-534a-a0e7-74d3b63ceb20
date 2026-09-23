@@ -17,6 +17,7 @@ from .schemas import (
     ProjectIn,
     ProjectUpdate,
     QualityCheckRequest,
+    QualityScanCompareRequest,
     RuleIn,
     RulePreviewRequest,
 )
@@ -303,7 +304,62 @@ def quality_check(project_id: str, payload: QualityCheckRequest | None = None) -
         raise HTTPException(status_code=400, detail=str(exc))
     result["projectId"] = project_id
     result["projectName"] = project["name"]
+    scan = db.create_quality_scan(project_id, result)
+    result["scanId"] = scan["id"]
+    result["scannedAt"] = scan["createdAt"]
     return result
+
+
+@app.get("/api/projects/{project_id}/quality-scans")
+def list_quality_scans(project_id: str) -> list[dict]:
+    """Scan history (window, time, stats) for the project, newest first."""
+    _get_or_404(project_id)
+    return db.list_quality_scans(project_id)
+
+
+@app.get("/api/quality-scans/{scan_id}")
+def get_quality_scan(scan_id: str) -> dict:
+    scan = db.get_quality_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    return scan
+
+
+@app.post("/api/projects/{project_id}/quality-scans/compare")
+def compare_quality_scans(project_id: str,
+                          payload: QualityScanCompareRequest) -> dict:
+    """Diff two scans of this project by issueId.
+
+    Comparison is refused (400) unless both scans belong to the project and
+    share exactly the same time window.
+    """
+    _get_or_404(project_id)
+    if payload.baseScanId == payload.targetScanId:
+        raise HTTPException(status_code=400,
+                            detail="请选择两条不同的扫描记录进行比较")
+    base = db.get_quality_scan(payload.baseScanId)
+    target = db.get_quality_scan(payload.targetScanId)
+    if base is None or target is None:
+        raise HTTPException(status_code=404, detail="扫描记录不存在")
+    if base["projectId"] != project_id or target["projectId"] != project_id:
+        raise HTTPException(status_code=400,
+                            detail="只能比较当前项目的扫描记录")
+    if not quality.same_window(base["window"], target["window"]):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"两次扫描的时间窗口不同（"
+                f"{base['window']['start']}s–{base['window']['end']}s 与 "
+                f"{target['window']['start']}s–{target['window']['end']}s），"
+                "无法比较；请选择时间窗口相同的两次扫描"
+            ),
+        )
+    diff = quality.diff_scans(base, target)
+    diff["baseScan"] = {k: base[k] for k in
+                        ("id", "window", "summary", "createdAt")}
+    diff["targetScan"] = {k: target[k] for k in
+                          ("id", "window", "summary", "createdAt")}
+    return diff
 
 
 # ---------- three-way merge ----------

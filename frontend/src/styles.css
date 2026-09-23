@@ -480,4 +480,57 @@ code {
 .qc-ann-evidence, .qc-seg-evidence {
   display: flex; flex-direction: column; gap: 4px; margin-top: 2px;
 }
+
+/* scan history & comparison */
+.qc-history { margin-top: 12px; }
+.qc-history-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.qc-history-head h3 { margin: 0; }
+.qc-history-empty { padding: 6px 0; }
+.qc-history-table .qc-pick-col { width: 42px; }
+.qc-history-table tr.qc-scan-current td { background: #f2f6ff; }
+.qc-history-table td.sev-error { color: var(--danger); font-weight: 700; }
+.qc-history-table td.sev-warning { color: var(--warn); font-weight: 700; }
+
+.qc-compare-bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.qc-compare-msg { flex: 1; min-width: 260px; }
+.qc-compare-actions { margin-left: auto; }
+
+.qc-history-banner {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 12px; background: #f7f9fc;
+}
+.qc-history-banner .btn { margin-left: auto; }
+
+.qc-compare { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.qc-compare-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap;
+}
+.qc-compare-head h3 { margin: 0 0 4px; }
+
+.stat-box.qc-diff-new span { color: var(--primary); font-weight: 700; }
+.stat-box.qc-diff-resolved span { color: #3a9e6e; font-weight: 700; }
+.stat-box.qc-diff-persisted span { color: var(--warn); font-weight: 700; }
+
+.qc-diff-group h4 { margin: 4px 0 8px; font-size: 14px; }
+.qc-diff-count {
+  display: inline-block; min-width: 20px; text-align: center;
+  margin: 0 6px; padding: 0 6px; border-radius: 10px;
+  background: #eef1f6; color: var(--muted); font-size: 12px;
+}
+.qc-diff-tag {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  font-weight: 700;
+}
+.qc-diff-tag.qc-diff-new { background: #e7eeff; color: var(--primary); }
+.qc-diff-tag.qc-diff-resolved { background: #e3f5ea; color: #2c8a5b; }
+.qc-diff-tag.qc-diff-persisted { background: #fdf0d9; color: var(--warn); }
+.qc-sev-change { background: #f1f4f9; color: var(--muted); }
 .qc-ann-evidence { flex-direction: row; flex-wrap: wrap; gap: 6px; }

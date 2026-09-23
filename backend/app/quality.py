@@ -441,3 +441,68 @@ def check_document(document: dict,
         },
         "issues": issues,
     }
+
+
+def same_window(win_a: dict, win_b: dict, tol: float = EPS) -> bool:
+    """Two scans may be diffed only when their time windows coincide."""
+    if not win_a or not win_b:
+        return False
+    try:
+        return abs(float(win_a["start"]) - float(win_b["start"])) <= tol \
+            and abs(float(win_a["end"]) - float(win_b["end"])) <= tol
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def diff_scans(base: dict, target: dict) -> dict:
+    """Classify issues between two scans by stable ``issueId``.
+
+    ``new``      — present in ``target`` but not in ``base``;
+    ``resolved`` — present in ``base`` but not in ``target``;
+    ``persisted``— present in both (snapshots from both scans attached).
+
+    The caller must have verified that both scans target the same project
+    and that their windows coincide (:func:`same_window`).
+    """
+    base_issues = {q["issueId"]: q for q in base.get("issues", [])}
+    target_issues = {q["issueId"]: q for q in target.get("issues", [])}
+    base_ids, target_ids = set(base_issues), set(target_issues)
+
+    new_ids = sorted(target_ids - base_ids,
+                     key=lambda i: (SEVERITY_ORDER.get(
+                         target_issues[i].get("severity"), 9),
+                         target_issues[i].get("start", 0.0), i))
+    resolved_ids = sorted(base_ids - target_ids,
+                          key=lambda i: (SEVERITY_ORDER.get(
+                              base_issues[i].get("severity"), 9),
+                              base_issues[i].get("start", 0.0), i))
+    persisted_ids = sorted(base_ids & target_ids,
+                           key=lambda i: (SEVERITY_ORDER.get(
+                               target_issues[i].get("severity"), 9),
+                               target_issues[i].get("start", 0.0), i))
+
+    def sev_counts(ids, pool):
+        counts = {SEVERITY_ERROR: 0, SEVERITY_WARNING: 0, SEVERITY_INFO: 0}
+        for i in ids:
+            sev = pool[i].get("severity")
+            if sev in counts:
+                counts[sev] += 1
+        return counts
+
+    return {
+        "window": target.get("window"),
+        "new": [target_issues[i] for i in new_ids],
+        "resolved": [base_issues[i] for i in resolved_ids],
+        "persisted": [
+            {"base": base_issues[i], "target": target_issues[i]}
+            for i in persisted_ids
+        ],
+        "counts": {
+            "new": len(new_ids),
+            "resolved": len(resolved_ids),
+            "persisted": len(persisted_ids),
+            "newBySeverity": sev_counts(new_ids, target_issues),
+            "resolvedBySeverity": sev_counts(resolved_ids, base_issues),
+            "persistedBySeverity": sev_counts(persisted_ids, target_issues),
+        },
+    }
